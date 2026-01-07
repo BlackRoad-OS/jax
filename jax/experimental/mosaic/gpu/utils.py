@@ -1087,6 +1087,28 @@ class BarrierRef:
         self.get_ptr(), bytes, predicate=predicate
     )
 
+  def complete_tx(
+      self, bytes: int | ir.Value, predicate: ir.Value | None = None
+  ):
+    if isinstance(bytes, int):
+      bytes = c(bytes, ir.IntegerType.get_signless(32))
+    elif ir.IndexType.isinstance(bytes.type):
+      i32 = ir.IntegerType.get_signless(32)
+      bytes = arith.index_cast(i32, bytes)
+
+    pred_ptx = pred_constraint = ""
+    if predicate is not None:
+      pred_ptx = "@$2"
+      pred_constraint = ",b"
+
+    llvm.inline_asm(
+        ir.Type.parse("!llvm.void"),
+        [self.get_ptr(), bytes] + ([predicate] if predicate is not None else []),
+        f"{pred_ptx} mbarrier.complete_tx.b64 [$0], $1;",
+        "l,r" + pred_constraint,
+        has_side_effects=True,
+    )
+
   def get_ptr(self):
     i64 = ir.IntegerType.get_signless(64)
     return getelementptr(self.base_address, [self.offset], i64)
@@ -2009,3 +2031,19 @@ def nvvm_mbarrier_arrive_expect_tx(barrier: ir.Value, expect_tx: ir.Value, predi
     return nvvm.mbarrier_arrive_expect_tx(None, barrier, expect_tx, predicate=predicate)  # type: ignore
   except TypeError:
     return nvvm.mbarrier_arrive_expect_tx(barrier, expect_tx, predicate=predicate)  # pytype: disable=missing-parameter
+
+
+def elements_to_bytes(offset: ir.Value, element_bitwidth: int) -> ir.Value:
+  """Convert an element-based linear offset to a byte-based offset."""
+  index_ty = offset.type
+
+  if element_bitwidth == 4:
+    return arith.shrui(offset, c(1, index_ty))
+  elif element_bitwidth == 8:
+    return offset
+  elif element_bitwidth == 16:
+    return arith.shli(offset, c(1, index_ty))
+  elif element_bitwidth == 32:
+    return arith.shli(offset, c(2, index_ty))
+  else:
+    raise ValueError(f"Unsupported element bitwidth: {element_bitwidth}.")
